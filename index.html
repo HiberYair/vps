@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transferencia Segura - React Tabs</title>
+    
+    <!-- Carga de Tailwind CSS para estilos modernos -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Carga de React y ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Carga de Babel para compilar JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Carga de CryptoJS para cifrado/descifrado local -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    <!-- Carga de Lucide React Icons (Usando .min.js de nuevo para consistencia UMD) -->
+    <script src="https://unpkg.com/lucide-react@latest/dist/umd/lucide-react.min.js"></script>
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <!-- Contenedor raíz para la aplicación de React -->
+    <div id="root"></div>
+
+    <!-- Script de la aplicación React/Babel -->
+    <script type="text/babel">
+        // Importación de hooks de React
+        const { useState, useCallback, useMemo } = React;
+        
+        // FIX: Implementación de un mecanismo de respaldo para los iconos de Lucide.
+        const Lucide = window.lucide || {};
+
+        // Componente de respaldo simple (usa un emoji de estrella)
+        const MissingIcon = (props) => (
+            <span 
+                className={props.className} 
+                title={`Icono ${props.name} no cargado`}
+                style={{ width: props.size || '1.5rem', height: props.size || '1.5rem', display: 'inline-block', color: 'currentColor' }}
+            >
+                &#9734;
+            </span>
+        ); 
+
+        // Función para obtener el ícono o el componente de respaldo
+        const getIcon = (name) => {
+            const Icon = Lucide[name];
+            if (Icon) return Icon;
+            // Retorna un componente que usa MissingIcon con el nombre original
+            return (props) => <MissingIcon {...props} name={name} />;
+        };
+
+        // Asignación de componentes de iconos con el respaldo implementado
+        const LogIn = getIcon('LogIn');
+        const UploadCloud = getIcon('UploadCloud');
+        const Download = getIcon('Download');
+        const Lock = getIcon('Lock');
+        const FileText = getIcon('FileText');
+        const User = getIcon('User');
+        const AlertTriangle = getIcon('AlertTriangle');
+        const Send = getIcon('Send');
+        const RotateCw = getIcon('RotateCw');
+        const Globe = getIcon('Globe');
+
+        // =======================================================
+        // === ⚠️ CONFIGURACIÓN DEL SERVIDOR Y CIFRADO ⚠️ ===
+        // =======================================================
+        // 🚨 REEMPLAZA ESTOS VALORES con los de tu servidor y tu clave maestra.
+        const API_BASE_URL = 'http://localhost:3000'; 
+        const SERVER_MASTER_KEY_HEX = "PEGA_AQUI_TU_CLAVE_HEXADECIMAL_DE_64_CARACTERES"; 
+        // =======================================================
+        
+        // #######################################################
+        // ############## UTILIDADES DE CIFRADO #################
+        // #######################################################
+
+        const getCryptoJS = () => {
+            if (typeof CryptoJS === 'undefined') {
+                console.error("La librería CryptoJS no se ha cargado correctamente.");
+                throw new Error("La librería CryptoJS no se ha cargado correctamente.");
+            }
+            return CryptoJS;
+        }
+
+        const arrayBufferToWordArray = (ab) => {
+            const CryptoJS = getCryptoJS();
+            const i8a = new Uint8Array(ab);
+            const w = [];
+            // Convertir ArrayBuffer a WordArray de 4 bytes en 4 bytes
+            for (let i = 0; i < i8a.length; i += 4) {
+                w.push(
+                    (i8a[i] << 24) | 
+                    (i8a[i + 1] << 16) | 
+                    (i8a[i + 2] << 8) | 
+                    i8a[i + 3]
+                );
+            }
+            // NOTA: arrayBufferToWordArray debe incluir la longitud exacta si la última palabra es parcial
+            const len = i8a.length;
+            return CryptoJS.lib.WordArray.create(w, len);
+        };
+
+        const wordArrayToArrayBuffer = (wordArray) => {
+            const len = wordArray.sigBytes;
+            const words = wordArray.words;
+            const u8a = new Uint8Array(len);
+
+            // Convertir WordArray a ArrayBuffer
+            for (let i = 0; i < len; i++) {
+                const byte = (words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
+                u8a[i] = byte;
+            }
+            return u8a.buffer;
+        };
+
+        // #######################################################
+        // ############## COMPONENTES DE VISTA ###################
+        // #######################################################
+
+        // --- 1. LoginView ---
+        const LoginView = ({ setAuthToken, setUsername, setActiveTab }) => {
+            const [user, setUser] = useState('');
+            const [password, setPassword] = useState('');
+            const [loading, setLoading] = useState(false);
+            const [error, setError] = useState(null);
+
+            const handleLogin = async (e) => {
+                e.preventDefault();
+                setLoading(true);
+                setError(null);
+
+                try {
+                    const response = await fetch(`${API_BASE_URL}/auth/login`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username: user, password }),
+                    });
+
+                    // 🚨 Manejo de errores corregido: Uso de response.clone()
+                    if (!response.ok) {
+                        // Clonar la respuesta para poder intentar leerla como JSON y luego como texto si falla
+                        const errorResponseClone = response.clone();
+                        let errorDetails = `Error del servidor (${response.status}).`;
+                        
+                        // 1. Intentar leer la respuesta original como JSON (formato de error esperado)
+                        try {
+                            const errorData = await response.json();
+                            errorDetails = errorData.message || `Error de autenticación. Código: ${response.status}.`;
+                        } catch (e) {
+                            // 2. Si falla, usar el clon para leer el cuerpo como texto (probablemente HTML o error de conexión)
+                            const responseText = await errorResponseClone.text();
+                            console.error("Respuesta no JSON/Error de conexión:", responseText);
+                            errorDetails = `Error de conexión o servidor. Verifica si ${API_BASE_URL} está activo o la ruta /auth/login es correcta.`;
+                        }
+                        
+                        throw new Error(errorDetails);
+                    }
+                    
+                    // Si response.ok es true, leer el JSON de éxito
+                    const data = await response.json();
+
+                    setAuthToken(data.token);
+                    setUsername(user);
+                    setActiveTab('send'); // Navegar a la vista de envío
+                } catch (err) {
+                    console.error('Login error:', err);
+                    setError(err.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+            
+            return (
+                <div className="max-w-md w-full p-8 bg-white rounded-3xl shadow-2xl border border-gray-200">
+                    <h2 className="text-3xl font-extrabold text-center text-indigo-600 mb-6 flex items-center justify-center">
+                        <LogIn className="w-6 h-6 mr-2" />
+                        Acceso Seguro
+                    </h2>
+                    <form onSubmit={handleLogin} className="space-y-5">
+                        {/* Input de Usuario */}
+                        <div>
+                            <label htmlFor="username" className="block text-sm font-medium text-gray-700 mb-1">Nombre de Usuario</label>
+                            <input
+                                id="username"
+                                type="text"
+                                value={user}
+                                onChange={(e) => setUser(e.target.value)}
+                                className="w-full p-3 border border-gray-300 rounded-xl focus:ring-indigo-500 focus:border-indigo-500 shadow-sm transition"
+                                placeholder="ej: nombre.usuario"
+                                required
+                            />
+                        </div>
+                        {/* Input de Contraseña */}
+                        <div>
+                            <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1">Contraseña</label>
+                            <input
+                                id="password"
+                                type="password"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                className="w-full p-3 border border-gray-300 rounded-xl focus:ring-indigo-500 focus:border-indigo-500 shadow-sm transition"
+                                required
+                            />
+                        </div>
+                        {/* Mensaje de Error */}
+                        {error && (
+                            <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-xl text-sm" role="alert">
+                                <AlertTriangle className="w-4 h-4 inline mr-2"/>
+                                {error}
+                            </div>
+                        )}
+                        {/* Botón de Acceder */}
+                        <button
+                            type="submit"
+                            disabled={loading}
+                            className="w-full flex items-center justify-center px-4 py-3 rounded-xl font-semibold transition duration-150 shadow-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-400"
+                        >
+                            {loading ? (
+                                <><RotateCw className="w-5 h-5 mr-2 animate-spin"/> Validando...</>
+                            ) : (
+                                <><LogIn className="w-5 h-5 mr-2"/> Acceder a la Plataforma</>
+                            )}
+                        </button>
+                    </form>
+                </div>
+            );
+        };
+
+        // --- 2. SendeerView (Contenido de la pestaña "Enviar Archivo") ---
+        const SendeerView = ({ authToken, username }) => {
+            const [file, setFile] = useState(null);
+            const [recipientUsername, setRecipientUsername] = useState('');
+            const [loading, setLoading] = useState(false);
+            const [message, setMessage] = useState('Selecciona o arrastra un archivo para comenzar.');
+            const [error, setError] = useState(null);
+
+            const handleFileChange = (e) => {
+                const selectedFile = e.target.files[0];
+                setFile(selectedFile);
+                setMessage(selectedFile ? `Archivo seleccionado: ${selectedFile.name}` : 'Selecciona o arrastra un archivo.');
+                setError(null);
+            };
+
+            const handleUpload = async (e) => {
+                e.preventDefault();
+                if (!file || !recipientUsername) {
+                    setError('Debes seleccionar un archivo y especificar el nombre de usuario del destinatario.');
+                    return;
+                }
+
+                setLoading(true);
+                setMessage('Cifrando y enviando a servidor...');
+                setError(null);
+
+                const formData = new FormData();
+                formData.append('document', file);
+                formData.append('recipientUsername', recipientUsername); 
+
+                try {
+                    const response = await fetch(`${API_BASE_URL}/files/upload`, {
+                        method: 'POST',
+                        headers: { 
+                            'Authorization': `Bearer ${authToken}`,
+                        },
+                        body: formData,
+                    });
+
+                    // 🚨 Manejo de errores corregido: Uso de response.clone()
+                    if (!response.ok) {
+                        // Clonar la respuesta para evitar el error "body stream already read"
+                        const errorResponseClone = response.clone();
+                        let errorDetails = `Error del servidor (${response.status}).`;
+                        
+                        // 1. Intentar leer la respuesta original como JSON (formato de error esperado)
+                        try {
+                            const errorData = await response.json();
+                            errorDetails = errorData.message || `Error al subir el archivo. Código: ${response.status}.`;
+                        } catch (e) {
+                            // 2. Si falla, usar el clon para leer el cuerpo como texto (probablemente HTML o error de conexión)
+                            const responseText = await errorResponseClone.text();
+                            console.error("Respuesta no JSON/Error de conexión:", responseText);
+                            errorDetails = `Error de conexión o servidor. Verifica si ${API_BASE_URL} está activo o la ruta /files/upload es correcta.`;
+                        }
+                        
+                        throw new Error(errorDetails);
+                    }
+
+                    // Si response.ok es true, leer el JSON de éxito
+                    const data = await response.json();
+
+                    setMessage(`✅ ¡Éxito! Documento cifrado y enviado a ${recipientUsername}. El destinatario recibirá la clave.`);
+                    setFile(null);
+                    setRecipientUsername('');
+                    document.getElementById('upload-file-input').value = null; // Limpiar input
+                } catch (err) {
+                    console.error('Upload error:', err);
+                    setError(err.message);
+                    setMessage('Error en el envío. Vuelve a intentarlo.');
+                } finally {
+                    setLoading(false);
+                }
+            };
+            
+            const DragAndDropArea = (
+                <div 
+                    className={`border-4 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer
+                                ${file ? 'border-green-500 bg-green-50/50' : 'border-gray-300 hover:border-indigo-500 hover:bg-indigo-50'}
+                                ${loading ? 'animate-pulse' : ''}`}
+                    onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.add('border-indigo-700', 'bg-indigo-100'); }}
+                    onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove('border-indigo-700', 'bg-indigo-100'); }}
+                    onDrop={(e) => { 
+                        e.preventDefault(); e.stopPropagation();
+                        e.currentTarget.classList.remove('border-indigo-700', 'bg-indigo-100');
+                        handleFileChange({ target: { files: e.dataTransfer.files } });
+                    }}
+                    onClick={() => document.getElementById('upload-file-input').click()}
+                >
+                    <input type="file" id="upload-file-input" onChange={handleFileChange} className="hidden"/>
+                    {file ? (
+                        <div className="flex flex-col items-center">
+                            <FileText className="w-12 h-12 text-green-600 mb-2"/>
+                            <p className="font-semibold text-lg text-gray-800">{file.name}</p>
+                            <p className="text-sm text-gray-500">Tamaño: {(file.size / 1024 / 1024).toFixed(2)} MB</p>
+                        </div>
+                    ) : (
+                        <div className="flex flex-col items-center">
+                            <UploadCloud className="w-12 h-12 text-gray-500 mb-2"/>
+                            <p className="text-lg font-medium text-gray-600">Arrastra y suelta aquí o haz click.</p>
+                            <p className="text-sm text-gray-400 mt-1">El archivo se cifrará antes de subir.</p>
+                        </div>
+                    )}
+                </div>
+            );
+
+            return (
+                <div className="w-full space-y-6 p-4">
+                    <form onSubmit={handleUpload} className="space-y-5">
+                        {DragAndDropArea}
+                        
+                        {/* Campo del Destinatario */}
+                        <div>
+                            <label htmlFor="recipient" className="block text-sm font-medium text-gray-700 mb-1 flex items-center">
+                                <User className="w-4 h-4 mr-1"/> Nombre de Usuario del Destinatario
+                            </label>
+                            <input
+                                id="recipient"
+                                type="text"
+                                value={recipientUsername}
+                                onChange={(e) => setRecipientUsername(e.target.value)}
+                                className="w-full p-3 border border-gray-300 rounded-xl focus:ring-indigo-500 focus:border-indigo-500 shadow-sm transition"
+                                placeholder="ej: bob (debe ser un usuario registrado)"
+                                required
+                                disabled={loading}
+                            />
+                        </div>
+
+                        {/* Mensajes */}
+                        {error && (
+                            <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-xl text-sm flex items-start" role="alert">
+                                <AlertTriangle className="w-4 h-4 mt-0.5 mr-2 flex-shrink-0"/>
+                                <span>{error}</span>
+                            </div>
+                        )}
+                        {message && !error && (
+                            <div className={`px-4 py-3 rounded-xl text-sm ${message.startsWith('✅') ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>
+                                {message}
+                            </div>
+                        )}
+
+                        <button
+                            type="submit"
+                            disabled={loading || !file || !recipientUsername}
+                            className="w-full flex items-center justify-center px-4 py-3 rounded-xl font-semibold transition duration-150 shadow-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-400"
+                        >
+                            {loading ? (
+                                <><RotateCw className="w-5 h-5 mr-2 animate-spin"/> Enviando...</>
+                            ) : (
+                                <><Send className="w-5 h-5 mr-2"/> Cifrar y Enviar Documento</>
+                            )}
+                        </button>
+                    </form>
+                </div>
+            );
+        };
+
+        // --- 3. DecrypterView (Contenido de la pestaña "Descifrar Local") ---
+        const DecrypterView = () => {
+            const [encryptedFile, setEncryptedFile] = useState(null);
+            const [decryptionKey, setDecryptionKey] = useState('');
+            const [originalFileName, setOriginalFileName] = useState('');
+            const [decryptedBlob, setDecryptedBlob] = useState(null);
+            const [isLoading, setIsLoading] = useState(false);
+            const [error, setError] = useState(null);
+            const [feedback, setFeedback] = useState('Arrastra y suelta el archivo *.enc* que descargaste.');
+
+            // Parsear la clave maestra solo una vez
+            const masterKey = useMemo(() => {
+                try {
+                    if (SERVER_MASTER_KEY_HEX.length !== 64) {
+                        setError("Error de Configuración: Clave maestra incorrecta. Verifica la constante SERVER_MASTER_KEY_HEX.");
+                        return null;
+                    }
+                    return getCryptoJS().enc.Hex.parse(SERVER_MASTER_KEY_HEX);
+                } catch (e) {
+                    setError("Error de Configuración: La librería CryptoJS no está disponible.");
+                    return null;
+                }
+            }, []);
+
+            const handleFileChange = useCallback((files) => {
+                if (files.length === 0) return;
+                const file = files[0];
+                if (!file.name.endsWith('.enc')) {
+                    setError("El archivo debe tener la extensión '.enc'.");
+                    setFeedback('¡Error! Archivo inválido.');
+                    return;
+                }
+                const baseName = file.name.slice(0, -4); 
+                setOriginalFileName(baseName);
+                setEncryptedFile(file);
+                setDecryptedBlob(null);
+                setError(null);
+                setFeedback(`Archivo cifrado listo: ${file.name}`);
+                document.getElementById('download-link')?.classList.add('hidden');
+            }, []);
+
+            const handleDecrypt = async () => {
+                if (!encryptedFile || !decryptionKey || !masterKey) {
+                    setError("Falta el archivo o la clave de descifrado.");
+                    return;
+                }
+                setIsLoading(true);
+                setError(null);
+                setDecryptedBlob(null);
+                setFeedback('Descifrando contenido...');
+
+                try {
+                    // IV de 16 bytes de ceros, debe coincidir con el servidor
+                    const iv = getCryptoJS().enc.Hex.parse('00000000000000000000000000000000'); 
+                    
+                    const buffer = await encryptedFile.arrayBuffer();
+                    const wordArray = arrayBufferToWordArray(buffer);
+
+                    // El descifrado se realiza con la clave maestra, NO con la clave del correo
+                    // La clave del correo es solo un paso de validación en el BACKEND.
+                    const decryptedWordArray = getCryptoJS().AES.decrypt(
+                        { ciphertext: wordArray }, 
+                        masterKey,                  
+                        { iv: iv, mode: getCryptoJS().mode.CBC, padding: getCryptoJS().pad.Pkcs7 }
+                    );
+                    
+                    if (!decryptedWordArray || decryptedWordArray.sigBytes === 0) {
+                        // Aquí se produce el error si la clave maestra no coincide o el archivo está dañado.
+                        // Como la clave del correo se usó en el backend para validar, el error más probable aquí es la clave maestra.
+                        throw new Error("Fallo en el descifrado. Verifica la clave maestra de configuración o el archivo.");
+                    }
+
+                    const decryptedArrayBuffer = wordArrayToArrayBuffer(decryptedWordArray);
+                    
+                    // Crear Blob para la descarga
+                    const fileType = encryptedFile.type === 'application/octet-stream' 
+                        ? 'application/octet-stream' 
+                        : encryptedFile.type.replace(/\.enc$/, ''); 
+                    
+                    const blob = new Blob([decryptedArrayBuffer], { type: fileType });
+
+                    setDecryptedBlob(blob);
+                    setFeedback(`¡Descifrado completo! Archivo ${originalFileName} listo para descargar.`);
+                } catch (err) {
+                    console.error('Decryption error:', err);
+                    setError(err.message);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
+            const handleDownload = () => {
+                if (!decryptedBlob) return;
+                const url = window.URL.createObjectURL(decryptedBlob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = originalFileName;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+
+                setFeedback(`Descarga completada de ${originalFileName}.`);
+                setEncryptedFile(null);
+                setDecryptedBlob(null);
+                setDecryptionKey('');
+                document.getElementById('decrypt-file-input').value = null; // Limpiar input
+            };
+
+            const DragAndDropArea = (
+                <div 
+                    className={`border-4 border-dashed rounded-xl p-6 text-center transition-colors cursor-pointer
+                                ${encryptedFile ? 'border-indigo-500 bg-indigo-50/50' : 'border-gray-300 hover:border-indigo-500 hover:bg-indigo-50'}`}
+                    onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.add('border-indigo-700', 'bg-indigo-100'); }}
+                    onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove('border-indigo-700', 'bg-indigo-100'); }}
+                    onDrop={(e) => { 
+                        e.preventDefault(); e.stopPropagation();
+                        e.currentTarget.classList.remove('border-indigo-700', 'bg-indigo-100');
+                        handleFileChange(e.dataTransfer.files);
+                    }}
+                    onClick={() => document.getElementById('decrypt-file-input').click()}
+                >
+                    <input 
+                        type="file" 
+                        id="decrypt-file-input" 
+                        onChange={(e) => handleFileChange(e.target.files)} 
+                        accept=".enc"
+                        className="hidden"
+                    />
+                    <div className="flex flex-col items-center">
+                        <Download className="w-8 h-8 text-gray-500 mb-2"/>
+                        <p className="text-sm font-medium text-gray-600">{encryptedFile ? encryptedFile.name : feedback}</p>
+                        <p className="text-xs text-gray-400 mt-1">Arrastra el archivo *.enc* aquí</p>
+                    </div>
+                </div>
+            );
+
+            return (
+                <div className="w-full space-y-6 p-4">
+                    {DragAndDropArea}
+
+                    {/* Mensajes de Estado */}
+                    {error && (
+                        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-xl text-sm flex items-start" role="alert">
+                            <AlertTriangle className="w-4 h-4 mt-0.5 mr-2 flex-shrink-0"/>
+                            <span>{error}</span>
+                        </div>
+                    )}
+                    {feedback && !error && (
+                        <div className={`px-4 py-3 rounded-xl text-sm ${feedback.startsWith('¡Descifrado completo!') ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>
+                            {feedback}
+                        </div>
+                    )}
+                    
+                    {/* Entrada de la Clave */}
+                    <div className="space-y-2">
+                        <label htmlFor="key" className="text-sm font-medium text-gray-700 block mb-1 flex items-center">
+                            <Lock className="w-4 h-4 mr-1"/> Clave de Descifrado
+                        </label>
+                        <input
+                            id="key"
+                            type="text"
+                            value={decryptionKey}
+                            onChange={(e) => setDecryptionKey(e.target.value)}
+                            placeholder="Ingresa la clave recibida por correo"
+                            className="w-full p-3 border border-gray-300 rounded-xl focus:ring-indigo-500 focus:border-indigo-500 shadow-sm transition"
+                            disabled={isLoading || decryptedBlob}
+                        />
+                    </div>
+                    
+                    {/* Botones de Acción */}
+                    <div className="flex flex-col space-y-3">
+                        {decryptedBlob ? (
+                            <button
+                                onClick={handleDownload}
+                                className="flex items-center justify-center px-4 py-3 rounded-xl font-semibold bg-green-600 text-white hover:bg-green-700 active:bg-green-800 transition duration-150 shadow-lg"
+                            >
+                                <Download className="w-5 h-5 mr-2"/> Descargar {originalFileName}
+                            </button>
+                        ) : (
+                            <button
+                                onClick={handleDecrypt}
+                                disabled={!encryptedFile || decryptionKey.length === 0 || isLoading || !!error || !masterKey}
+                                className={`flex items-center justify-center px-4 py-3 rounded-xl font-semibold transition duration-150 shadow-lg 
+                                    ${(!encryptedFile || decryptionKey.length === 0 || isLoading || !!error || !masterKey) ? 'bg-gray-400 text-gray-600 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700 active:bg-indigo-800'}`}
+                            >
+                                {isLoading ? (
+                                    <><RotateCw className="w-5 h-5 mr-2 animate-spin"/> Procesando Descifrado...</>
+                                ) : (
+                                    <><Lock className="w-5 h-5 mr-2"/> Iniciar Descifrado Local</>
+                                )}
+                            </button>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        // --- 4. TabButton (Componente para la barra de pestañas) ---
+        const TabButton = ({ icon: Icon, label, isActive, onClick }) => (
+            <button
+                onClick={onClick}
+                className={`flex-1 flex items-center justify-center p-3 rounded-t-xl text-sm font-medium transition-colors border-b-4
+                    ${isActive 
+                        ? 'text-indigo-600 bg-white border-indigo-600 shadow-t-lg' 
+                        : 'text-gray-500 bg-gray-50 border-transparent hover:bg-gray-100 hover:text-indigo-500'}`
+                }
+            >
+                <Icon className="w-5 h-5 mr-2"/>
+                {label}
+            </button>
+        );
+
+
+        // #######################################################
+        // ############## COMPONENTE PRINCIPAL (APP) #############
+        // #######################################################
+
+        const App = () => {
+            const [authToken, setAuthToken] = useState(null);
+            const [username, setUsername] = useState('');
+            const [activeTab, setActiveTab] = useState('send'); // 'send' o 'decrypt'
+
+            const handleLogout = () => {
+                setAuthToken(null);
+                setUsername('');
+                setActiveTab('send');
+            };
+
+            const renderContent = () => {
+                if (!authToken) {
+                    return <LoginView setAuthToken={setAuthToken} setUsername={setUsername} setActiveTab={setActiveTab} />;
+                }
+
+                switch (activeTab) {
+                    case 'decrypt':
+                        return <DecrypterView />;
+                    case 'send':
+                    default:
+                        return <SendeerView authToken={authToken} username={username} />;
+                }
+            };
+            
+            return (
+                <div className="min-h-screen bg-gray-100 flex flex-col items-center p-4">
+                    
+                    {/* Header y Usuario */}
+                    <header className="w-full max-w-2xl bg-white p-4 mb-6 rounded-xl shadow-lg flex justify-between items-center border-b-4 border-indigo-600">
+                        <div className="flex items-center">
+                            <Globe className="w-7 h-7 text-indigo-600 mr-2"/>
+                            <span className="text-2xl font-extrabold text-gray-800">CifradoSeguro</span>
+                        </div>
+                        {authToken && (
+                            <div className="flex items-center space-x-3">
+                                <span className="text-sm font-medium text-gray-600 flex items-center">
+                                    <User className="w-4 h-4 mr-1 text-green-500"/> Usuario: <span className="font-bold ml-1 text-green-600">{username}</span>
+                                </span>
+                                <button
+                                    onClick={handleLogout}
+                                    className="p-2 rounded-lg text-sm font-medium bg-red-100 text-red-700 hover:bg-red-200 transition flex items-center"
+                                >
+                                    <LogIn className="w-4 h-4 mr-1"/> Salir
+                                </button>
+                            </div>
+                        )}
+                    </header>
+
+                    {/* Contenedor Principal (Tabs o Login) */}
+                    <div className={`w-full ${authToken ? 'max-w-2xl bg-white shadow-2xl rounded-xl' : 'max-w-md'}`}>
+                        {authToken && (
+                            <>
+                                {/* Barra de Pestañas */}
+                                <div className="flex border-b border-gray-200">
+                                    <TabButton 
+                                        icon={Send} 
+                                        label="Enviar Archivo" 
+                                        isActive={activeTab === 'send'} 
+                                        onClick={() => setActiveTab('send')}
+                                    />
+                                   
+                                </div>
+                                
+                                {/* Contenido de la Pestaña */}
+                                <div className="min-h-[450px]">
+                                    {renderContent()}
+                                </div>
+                            </>
+                        )}
+                        {!authToken && renderContent()}
+                    </div>
+
+                    <footer className="mt-8 text-xs text-gray-500 text-center">
+                        <p>Mensajeria Segura.</p>
+                    </footer>
+                </div>
+            );
+        };
+        
+        // Renderizar la aplicación en el DOM
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<App />);
+    </script>
+</body>
+</html>

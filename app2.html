@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CryptoShare: Transferencia y Descifrado Seguro Unificado</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        /* Estilo para el botón de pestaña activa */
+        .tab-active { 
+            background-color: #4f46e5; /* indigo-600 */
+            color: white; 
+            box-shadow: inset 0 3px 5px rgba(0, 0, 0, 0.1);
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // =======================================================
+        // DEFINICIÓN DE ÍCONOS SVG EN LÍNEA
+        // =======================================================
+        const Send = (props) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>;
+        const MessageSquare = (props) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>;
+        const Unlock = (props) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>;
+        const Inbox = (props) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>;
+        const LogOut = (props) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>;
+        const CheckCircle = (props) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg>;
+        const XCircle = (props) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>;
+        const Download = (props) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>;
+
+        // =======================================================
+        // CONSTANTES Y UTILIDADES
+        // =======================================================
+        const { useState, useEffect, useCallback } = React;
+        
+        // **IMPORTANTE: Cambiar 'http://localhost:3000' a la URL pública de tu backend Express**
+        const API_BASE_URL = 'http://localhost:3000'; 
+
+        // Convierte Base64 a ArrayBuffer (para descargar archivos descifrados)
+        const base64ToArrayBuffer = (base64) => {
+            const binaryString = atob(base64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes.buffer;
+        };
+
+        // Intenta determinar el tipo MIME del archivo original
+        const getFileMimeType = (filename) => {
+            const cleanFilename = filename.endsWith('.enc') ? filename.replace('.enc', '') : filename;
+            const extension = cleanFilename.slice(((cleanFilename.lastIndexOf(".") - 1) >>> 0) + 2).toLowerCase();
+            
+            const mimeMap = {
+                'pdf': 'application/pdf', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+                'txt': 'text/plain', 'doc': 'application/msword',
+                'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'xls': 'application/vnd.ms-excel',
+                'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            };
+            return mimeMap[extension] || 'application/octet-stream';
+        };
+
+        // Fuerza la descarga del archivo (descifrado o cifrado)
+        const downloadFile = (blob, fileName, isEncrypted = false) => {
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            
+            const finalName = isEncrypted ? fileName : fileName.replace(/\.enc$/, ''); 
+            
+            a.download = finalName;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+        };
+
+
+        // =======================================================
+        // COMPONENTES UI
+        // =======================================================
+
+        const CustomMessageBox = ({ message, type, onClose }) => {
+            const bgColor = type === 'success' ? 'bg-green-500' : 'bg-red-500';
+            const Icon = type === 'success' ? CheckCircle : XCircle;
+
+            return (
+                <div className={`fixed top-4 right-4 z-50 p-4 rounded-lg shadow-xl text-white flex items-center ${bgColor} transition-transform transform duration-300 ease-out animate-slideIn`}>
+                    <Icon className="w-5 h-5 mr-2" />
+                    <span className="text-sm font-medium">{message}</span>
+                    <button onClick={onClose} className="ml-4 text-white opacity-70 hover:opacity-100 transition">
+                        &times;
+                    </button>
+                    <style jsx>{`
+                        @keyframes slideIn {
+                            from { transform: translateX(100%); }
+                            to { transform: translateX(0); }
+                        }
+                        .animate-slideIn {
+                            animation: slideIn 0.5s forwards;
+                        }
+                    `}</style>
+                </div>
+            );
+        };
+
+        const TabButton = ({ icon: Icon, label, isActive, onClick }) => (
+            <button
+                onClick={onClick}
+                className={`flex items-center px-4 py-2 text-sm font-semibold rounded-t-lg transition-colors duration-200 border-b-2 border-transparent ${
+                    isActive 
+                        ? 'tab-active' 
+                        : 'text-gray-700 hover:bg-gray-100'
+                }`}
+            >
+                <Icon className="w-5 h-5 mr-2" />
+                {label}
+            </button>
+        );
+
+        // =======================================================
+        // VISTAS PRINCIPALES
+        // =======================================================
+
+        // VISTA 1: CIFRADO Y SUBIDA
+        const EncryptView = ({ showMessage }) => {
+            const [file, setFile] = useState(null);
+            const [recipientUsername, setRecipientUsername] = useState('');
+            const [message, setMessage] = useState('');
+            const [isUploading, setIsUploading] = useState(false);
+
+            const handleFileChange = (e) => {
+                setFile(e.target.files[0]);
+                setMessage('');
+            };
+
+            const handleUpload = async () => {
+                if (!file || !recipientUsername) {
+                    setMessage('Debes seleccionar un archivo y especificar el destinatario.');
+                    return;
+                }
+
+                const token = localStorage.getItem('authToken');
+                if (!token) {
+                    setMessage('Error: Debes iniciar sesión para cifrar y enviar.');
+                    showMessage('Sesión no iniciada.', 'error');
+                    return;
+                }
+
+                setIsUploading(true);
+                setMessage(`Cifrando y enviando "${file.name}" a ${recipientUsername}...`);
+
+                try {
+                    const formData = new FormData();
+                    formData.append('document', file); 
+                    formData.append('recipientUsername', recipientUsername);
+
+                    const response = await fetch(`${API_BASE_URL}/files/upload`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${token}` 
+                        },
+                        body: formData
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok) {
+                        showMessage(`¡Archivo cifrado y enviado! Clave: ${data.decryptionKey}`, 'success');
+                        setMessage(`Éxito: Archivo enviado. Clave de descifrado generada y enviada a ${recipientUsername}.`);
+                        
+                        setFile(null);
+                        setRecipientUsername('');
+                        document.getElementById('file-encrypt-upload').value = null; 
+
+                    } else {
+                        const errorMessage = data.message || `Error ${response.status}: Fallo en el envío.`;
+                        setMessage(errorMessage);
+                        showMessage(errorMessage, 'error');
+                    }
+                } catch (error) {
+                    setMessage('Error de conexión o procesamiento. Revisa la consola.');
+                    showMessage('Error grave de red o conversión de datos.', 'error');
+                } finally {
+                    setIsUploading(false);
+                }
+            };
+
+            return (
+                <div className="p-6 bg-white rounded-xl shadow-2xl w-full max-w-md mx-auto">
+                    <h3 className="text-xl font-bold text-gray-800 mb-4">Cifrar Archivo y Notificar</h3>
+                    <p className="text-gray-600 mb-6 border-b pb-4 text-sm">El archivo se cifra en el servidor. La clave se envía automáticamente por correo al destinatario.</p>
+                    
+                    <div className="mb-4">
+                        <label className="block text-gray-700 font-medium mb-2">1. Archivo a Cifrar</label>
+                        <input
+                            id="file-encrypt-upload" 
+                            type="file"
+                            onChange={handleFileChange}
+                            className="w-full p-2 border border-gray-300 rounded-lg file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                        />
+                        {file && <p className="mt-2 text-sm text-gray-500">Seleccionado: **{file.name}**</p>}
+                    </div>
+
+                    <div className="mb-6">
+                        <label className="block text-gray-700 font-medium mb-2">2. Nombre de Usuario Destinatario</label>
+                        <input
+                            type="text"
+                            placeholder="Usuario registrado"
+                            value={recipientUsername}
+                            onChange={(e) => setRecipientUsername(e.target.value)}
+                            className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                    </div>
+                    
+                    {message && (
+                        <p className={`p-3 rounded-lg mb-4 text-sm font-medium ${message.includes('Éxito') || message.includes('generada') ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                            {message}
+                        </p>
+                    )}
+
+                    <button 
+                        onClick={handleUpload}
+                        disabled={!file || !recipientUsername || isUploading}
+                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-lg shadow-xl transition duration-150 disabled:bg-gray-400 disabled:shadow-none transform hover:scale-[1.005]"
+                    >
+                        {isUploading ? 'Cifrando y Notificando...' : '3. Cifrar y Enviar Archivo'}
+                    </button>
+                </div>
+            );
+        };
+        
+        // VISTA 2: MENSAJERÍA SEGURA (CHAT) <-- NUEVA VISTA
+        const ChatView = ({ token, showMessage }) => {
+            const [recipientUsername, setRecipientUsername] = useState('');
+            const [messages, setMessages] = useState([]);
+            const [newMessage, setNewMessage] = useState('');
+            const [isLoading, setIsLoading] = useState(false);
+            const [chatError, setChatError] = useState('');
+            
+            // Obtener el nombre de usuario de la sesión actual
+            const currentUsername = localStorage.getItem('authUsername');
+
+            const fetchMessages = useCallback(async () => {
+                if (!recipientUsername) return;
+
+                setIsLoading(true);
+                setChatError('');
+                try {
+                    // API Call: Asume el endpoint /messages/history devuelve un array de { id, sender, content, timestamp }
+                    const response = await fetch(`${API_BASE_URL}/messages/history?recipient=${recipientUsername}`, {
+                        headers: {
+                            'Authorization': `Bearer ${token}`
+                        }
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok) {
+                        // Ordenar por timestamp y usar los mensajes devueltos
+                        setMessages(data.messages || []);
+                    } else {
+                        setChatError(data.message || 'Error al cargar mensajes. ¿Destinatario válido?');
+                    }
+                } catch (error) {
+                    setChatError('Error de conexión al obtener historial.');
+                } finally {
+                    setIsLoading(false);
+                }
+            }, [token, recipientUsername]);
+
+            useEffect(() => {
+                // Fetch messages whenever the recipient changes 
+                if (recipientUsername) {
+                     fetchMessages();
+                     // Simulación de auto-refresh (reemplazar con WebSockets en producción)
+                     const interval = setInterval(fetchMessages, 10000); 
+                     return () => clearInterval(interval);
+                } else {
+                    setMessages([]);
+                }
+            }, [recipientUsername, fetchMessages]); 
+
+            const handleSendMessage = async (e) => {
+                e.preventDefault();
+                if (!newMessage.trim() || !recipientUsername) return;
+
+                const messageToSend = newMessage.trim();
+                setNewMessage('');
+                setChatError('');
+
+                // Optimistic update: Añadir mensaje al estado local inmediatamente
+                const tempId = Date.now();
+                const tempMessage = { 
+                    id: tempId, 
+                    sender: currentUsername, 
+                    content: messageToSend, 
+                    timestamp: new Date() 
+                };
+                setMessages(prevMessages => [...prevMessages, tempMessage]);
+
+                try {
+                    const response = await fetch(`${API_BASE_URL}/messages/send`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify({
+                            recipientUsername: recipientUsername,
+                            content: messageToSend
+                        })
+                    });
+
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        setChatError(data.message || 'Error al enviar el mensaje.');
+                        showMessage('Fallo al enviar el mensaje.', 'error');
+                        // Rollback
+                        setMessages(prevMessages => prevMessages.filter(msg => msg.id !== tempId));
+                        setNewMessage(messageToSend); 
+                    }
+                } catch (error) {
+                    setChatError('Error de conexión al enviar.');
+                    showMessage('Error de conexión.', 'error');
+                    // Rollback
+                    setMessages(prevMessages => prevMessages.filter(msg => msg.id !== tempId));
+                    setNewMessage(messageToSend); 
+                }
+            };
+            
+            // --- Componente de Lista de Mensajes ---
+            const MessageList = () => (
+                <div className="flex-grow overflow-y-auto p-4 space-y-4 bg-gray-50 border rounded-lg max-h-96 min-h-64 flex flex-col justify-end">
+                    {isLoading && <p className="text-center text-sm text-gray-500">Cargando historial...</p>}
+                    
+                    {!isLoading && !recipientUsername && (
+                        <div className="text-center p-10 text-gray-400">Selecciona un destinatario para comenzar.</div>
+                    )}
+                    
+                    {!isLoading && recipientUsername && messages.length === 0 && !chatError && (
+                        <div className="text-center p-10 text-gray-400">Inicia una nueva conversación con **{recipientUsername}**.</div>
+                    )}
+
+                    {messages.map((msg, index) => {
+                        // Usar currentUsername para determinar si es mi mensaje
+                        const isMyMessage = msg.sender === currentUsername; 
+                        const messageClass = isMyMessage ? 'bg-indigo-600 text-white self-end rounded-br-none' : 'bg-white text-gray-800 self-start rounded-tl-none border';
+                        const containerClass = isMyMessage ? 'flex justify-end' : 'flex justify-start';
+
+                        return (
+                            <div key={msg.id || index} className={containerClass}>
+                                <div className={`max-w-xs md:max-w-md p-3 rounded-xl shadow-md ${messageClass}`}>
+                                    <p className="text-xs font-semibold mb-1 opacity-80">{isMyMessage ? 'Tú' : msg.sender}</p>
+                                    <p className="text-sm break-words">{msg.content}</p>
+                                    <p className="text-xs mt-1 opacity-60 text-right">{new Date(msg.timestamp).toLocaleTimeString()}</p>
+                                </div>
+                            </div>
+                        );
+                    })}
+                    
+                    {chatError && <p className="text-sm text-red-600 font-medium p-2 bg-red-100 rounded-lg self-center">{chatError}</p>}
+                </div>
+            );
+
+            return (
+                <div className="p-6 bg-white rounded-xl shadow-2xl w-full max-w-xl mx-auto flex flex-col space-y-4">
+                    <h3 className="text-xl font-bold text-gray-800 border-b pb-2">Mensajería Segura P2P</h3>
+                    
+                    {/* Destinatario Selector */}
+                    <div className="mb-2">
+                        <label className="block text-gray-700 font-medium mb-1">Destinatario:</label>
+                        <input
+                            type="text"
+                            placeholder="Nombre de Usuario del Destinatario"
+                            value={recipientUsername}
+                            onChange={(e) => setRecipientUsername(e.target.value)}
+                            className="w-full p-3 border border-indigo-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                    </div>
+                    
+                    {/* Message List */}
+                    <MessageList />
+                    
+                    {/* Message Input */}
+                    <form onSubmit={handleSendMessage} className="flex space-x-2">
+                        <input
+                            type="text"
+                            placeholder="Escribe tu mensaje secreto..."
+                            value={newMessage}
+                            onChange={(e) => setNewMessage(e.target.value)}
+                            disabled={!recipientUsername || isLoading}
+                            className="flex-grow p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-100"
+                        />
+                        <button
+                            type="submit"
+                            disabled={!newMessage.trim() || !recipientUsername || isLoading}
+                            className="flex items-center bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg shadow-md transition duration-150 disabled:bg-gray-400"
+                        >
+                            <Send className="w-5 h-5" />
+                        </button>
+                    </form>
+                </div>
+            );
+        };
+
+
+        // VISTA 3: BANDEJA DE ENTRADA (INBOX)
+        const InboxView = ({ token, showMessage }) => {
+            const [files, setFiles] = useState([]);
+            const [isLoading, setIsLoading] = useState(true);
+            const [message, setMessage] = useState('Cargando archivos...');
+            
+            const fetchInbox = async () => {
+                setIsLoading(true);
+                setMessage('Cargando archivos pendientes...');
+                try {
+                    const response = await fetch(`${API_BASE_URL}/files/inbox`, {
+                        headers: {
+                            'Authorization': `Bearer ${token}`
+                        }
+                    });
+                    const data = await response.json();
+
+                    if (response.ok) {
+                        setFiles(data.files);
+                        setMessage(data.message);
+                    } else {
+                         // Si es 401, el token ha expirado. Forzamos el logout.
+                        if (response.status === 401) {
+                            localStorage.removeItem('authToken');
+                            localStorage.removeItem('authUsername'); // FIX: Limpiar username
+                            showMessage('Sesión expirada. Por favor, vuelve a iniciar sesión.', 'error');
+                        }
+                        throw new Error(data.message || 'Error al cargar la bandeja de entrada.');
+                    }
+                } catch (error) {
+                    setMessage('Error al conectar con el servidor: ' + error.message);
+                    showMessage('Error de red o servidor al cargar el Inbox.', 'error');
+                    setFiles([]);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+            
+            useEffect(() => {
+                if (token) {
+                    fetchInbox();
+                }
+            }, [token]);
+
+            const handleDownload = async (fileId, originalName) => {
+                try {
+                    showMessage(`Iniciando descarga de ${originalName}.enc...`, 'success');
+                    
+                    const response = await fetch(`${API_BASE_URL}/files/download-encrypted/${fileId}`, {
+                        headers: {
+                            'Authorization': `Bearer ${token}`
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.message || 'Fallo en la descarga del archivo cifrado.');
+                    }
+
+                    // 1. Obtener el archivo binario (Blob)
+                    const blob = await response.blob();
+                    
+                    // 2. Descargar el archivo cifrado (.enc)
+                    downloadFile(blob, originalName + '.enc', true); 
+                    
+                    // 3. Quitar el archivo descargado de la lista
+                    setFiles(prevFiles => prevFiles.filter(f => f.fileId !== fileId));
+                    showMessage(`Archivo "${originalName}.enc" descargado con éxito. ¡Busca la clave en tu correo!`, 'success');
+
+                } catch (error) {
+                    showMessage(error.message, 'error');
+                }
+            };
+
+            if (isLoading) {
+                return <p className="text-center text-gray-500 mt-8">{message}</p>;
+            }
+
+            return (
+                <div className="p-6 bg-white rounded-xl shadow-2xl w-full max-w-4xl mx-auto">
+                    <h3 className="text-xl font-bold text-gray-800 mb-4">Bandeja de Entrada ({files.length} Pendientes)</h3>
+                    <p className="text-gray-600 mb-6 border-b pb-4 text-sm">{message}</p>
+
+                    {files.length === 0 ? (
+                        <div className="text-center py-12 bg-gray-50 rounded-lg">
+                            <Inbox className="w-12 h-12 mx-auto text-indigo-400" />
+                            <p className="mt-2 text-gray-500">No tienes archivos pendientes de descarga.</p>
+                        </div>
+                    ) : (
+                        <div className="space-y-4">
+                            {files.map(file => (
+                                <div key={file.fileId} className="flex justify-between items-center p-4 bg-indigo-50 rounded-lg shadow-sm hover:shadow-md transition duration-150">
+                                    <div>
+                                        <p className="font-semibold text-gray-800">{file.originalName}</p>
+                                        <p className="text-xs text-gray-500 mt-1">Recibido: {new Date(file.dateSent).toLocaleString()}</p>
+                                    </div>
+                                    <button
+                                        onClick={() => handleDownload(file.fileId, file.originalName)}
+                                        className="flex items-center bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold py-2 px-4 rounded-lg transition duration-150 shadow-md"
+                                    >
+                                        <Download className="w-4 h-4 mr-2" /> Descargar (.enc)
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+
+        // VISTA 4: DESCIFRADO MANUAL
+        const DecryptView = ({ showMessage }) => {
+            const [file, setFile] = useState(null);
+            const [key, setKey] = useState('');
+            const [message, setMessage] = useState('');
+            const [isDecrypting, setIsDecrypting] = useState(false);
+
+            const handleFileChange = (e) => {
+                setFile(e.target.files[0]);
+                setMessage('');
+            };
+
+            const handleManualDecrypt = () => {
+                if (!file || !key) {
+                    setMessage('Debes seleccionar el archivo cifrado (.enc) y la clave.');
+                    return;
+                }
+                
+                const token = localStorage.getItem('authToken'); 
+                if (!token) {
+                    setMessage('Error: Debes iniciar sesión para descifrar.');
+                    showMessage('Sesión no iniciada.', 'error');
+                    return;
+                }
+
+                setIsDecrypting(true);
+                setMessage('Enviando archivo y clave al servidor para descifrado...');
+
+                const reader = new FileReader();
+                reader.onload = async (e) => {
+                    try {
+                        // 1. Convertir el ArrayBuffer a Base64
+                        const base64Encrypted = btoa(new Uint8Array(e.target.result).reduce((data, byte) => data + String.fromCharCode(byte), ''));
+
+                        // 2. Enviar datos cifrados y clave al backend
+                        const response = await fetch(`${API_BASE_URL}/files/decrypt`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${token}` 
+                            },
+                            body: JSON.stringify({
+                                encryptedFileData: base64Encrypted, 
+                                decryptionKey: key,
+                                originalName: file.name 
+                            })
+                        });
+
+                        const responseData = await response.json();
+                        
+                        if (response.ok) {
+                            if (!responseData.fileData) {
+                                throw new Error('El servidor no devolvió el archivo descifrado (missing fileData).');
+                            }
+                            const decryptedBuffer = base64ToArrayBuffer(responseData.fileData); 
+                            const mimeType = getFileMimeType(file.name); 
+                            const decryptedBlob = new Blob([decryptedBuffer], { type: mimeType });
+                            
+                            downloadFile(decryptedBlob, file.name, false); 
+
+                            showMessage(`¡Archivo descifrado y guardado con éxito! Nombre: ${file.name.replace('.enc', '')}.`, 'success');
+                            setMessage('Descifrado completo.');
+                            
+                            setFile(null);
+                            setKey('');
+                            document.getElementById('file-decrypt-upload').value = null; 
+
+                        } else {
+                            const errorMessage = responseData.message || `Error ${response.status}: Error de descifrado. Verifica la clave o el archivo.`;
+                            setMessage(errorMessage);
+                            showMessage(errorMessage, 'error');
+                        }
+                    } catch (fetchError) {
+                        setMessage('Error de conexión o procesamiento. Revisa la consola.');
+                        showMessage('Error grave de red o conversión de datos.', 'error');
+                    } finally {
+                        setIsDecrypting(false);
+                    }
+                };
+                
+                reader.onerror = () => {
+                    setIsDecrypting(false);
+                    setMessage('Error al leer el archivo.');
+                    showMessage('Error al leer el archivo.', 'error');
+                }
+                
+                reader.readAsArrayBuffer(file);
+            };
+
+            return (
+                <div className="p-6 bg-white rounded-xl shadow-2xl w-full max-w-md mx-auto">
+                    <h3 className="text-xl font-bold text-gray-800 mb-4">Descifrado Manual</h3>
+                    <p className="text-gray-600 mb-6 border-b pb-4 text-sm">Utiliza el archivo **.enc** descargado y la clave secreta que recibiste.</p>
+                    
+                    <div className="mb-4">
+                        <label className="block text-gray-700 font-medium mb-2">1. Archivo Cifrado (.enc)</label>
+                        <input
+                            id="file-decrypt-upload" 
+                            type="file"
+                            onChange={handleFileChange}
+                            accept=".enc"
+                            className="w-full p-2 border border-gray-300 rounded-lg file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                        />
+                        {file && <p className="mt-2 text-sm text-gray-500">Seleccionado: **{file.name}**</p>}
+                    </div>
+
+                    <div className="mb-6">
+                        <label className="block text-gray-700 font-medium mb-2">2. Clave de Descifrado</label>
+                        <input
+                            type="text"
+                            placeholder="Clave secreta"
+                            value={key}
+                            onChange={(e) => setKey(e.target.value)}
+                            className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                    </div>
+                    
+                    {message && (
+                        <p className={`p-3 rounded-lg mb-4 text-sm font-medium ${message.includes('éxito') || message.includes('completo') ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                            {message}
+                        </p>
+                    )}
+
+                    <button 
+                        onClick={handleManualDecrypt}
+                        disabled={!file || !key || isDecrypting}
+                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-lg shadow-xl transition duration-150 disabled:bg-gray-400 disabled:shadow-none transform hover:scale-[1.005]"
+                    >
+                        {isDecrypting ? 'Descifrando y Descargando...' : '3. Descifrar y Guardar Archivo'}
+                    </button>
+                </div>
+            );
+        };
+
+
+        // VISTA 5: AUTENTICACIÓN (MODIFICADA PARA GUARDAR USERNAME)
+        const AuthForm = ({ setToken, showMessage }) => {
+            const [username, setUsername] = useState('');
+            const [email, setEmail] = useState('');
+            const [password, setPassword] = useState('');
+            const [isRegister, setIsRegister] = useState(false);
+            const [loading, setLoading] = useState(false);
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                setLoading(true);
+
+                const endpoint = isRegister ? 'register' : 'login';
+                const body = { username, password };
+                if (isRegister) body.email = email;
+
+                try {
+                    const response = await fetch(`${API_BASE_URL}/auth/${endpoint}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body)
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok) {
+                        localStorage.setItem('authToken', data.token);
+                        localStorage.setItem('authUsername', username); // <-- FIX: GUARDAR USERNAME
+                        setToken(data.token);
+                        showMessage(isRegister ? 'Registro exitoso. ¡Bienvenido!' : 'Inicio de sesión exitoso.', 'success');
+                    } else {
+                        showMessage(data.message || 'Error de autenticación.', 'error');
+                    }
+                } catch (error) {
+                    showMessage('Error de conexión con el servidor.', 'error');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-sm mt-8">
+                    <h2 className="text-3xl font-extrabold text-gray-900 mb-6 text-center">
+                        {isRegister ? 'Crear Cuenta' : 'Iniciar Sesión'}
+                    </h2>
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <input
+                                type="text"
+                                placeholder="Nombre de Usuario"
+                                value={username}
+                                onChange={(e) => setUsername(e.target.value)}
+                                required
+                                className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            />
+                        </div>
+                        {isRegister && (
+                            <div>
+                                <input
+                                    type="email"
+                                    placeholder="Correo Electrónico"
+                                    value={email}
+                                    onChange={(e) => setEmail(e.target.value)}
+                                    required
+                                    className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                />
+                            </div>
+                        )}
+                        <div>
+                            <input
+                                type="password"
+                                placeholder="Contraseña"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                required
+                                className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            />
+                        </div>
+                        <button
+                            type="submit"
+                            disabled={loading}
+                            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-lg shadow-lg transition duration-150 disabled:bg-gray-400"
+                        >
+                            {loading ? 'Procesando...' : (isRegister ? 'Registrarse' : 'Acceder')}
+                        </button>
+                    </form>
+                    <p className="mt-4 text-center text-sm text-gray-600">
+                        {isRegister ? '¿Ya tienes cuenta?' : '¿No tienes cuenta?'}
+                        <button 
+                            type="button" 
+                            onClick={() => setIsRegister(!isRegister)}
+                            className="text-indigo-600 hover:text-indigo-800 font-semibold ml-1 transition"
+                        >
+                            {isRegister ? 'Iniciar Sesión' : 'Regístrate'}
+                        </button>
+                    </p>
+                </div>
+            );
+        };
+
+
+        // =======================================================
+        // COMPONENTE PRINCIPAL (APP)
+        // =======================================================
+
+        const App = () => {
+            const [token, setToken] = useState(localStorage.getItem('authToken'));
+            const [view, setView] = useState('encrypt'); // Nueva vista 'chat'
+            const [alertMessage, setAlertMessage] = useState(null);
+            const [alertType, setAlertType] = useState('success');
+
+            const showAlert = (message, type) => {
+                setAlertMessage(message);
+                setAlertType(type);
+                setTimeout(() => setAlertMessage(null), 5000);
+            };
+
+            const handleLogout = () => {
+                localStorage.removeItem('authToken');
+                localStorage.removeItem('authUsername'); // <-- FIX: LIMPIAR USERNAME
+                setToken(null);
+                setView('encrypt');
+                showAlert('Sesión cerrada con éxito.', 'success');
+            };
+
+            const Header = () => (
+                <header className="bg-white shadow-md p-4 flex justify-between items-center w-full">
+                    <h1 className="text-2xl font-extrabold text-indigo-700">CryptoShare</h1>
+                    {token && (
+                        <button 
+                            onClick={handleLogout}
+                            className="flex items-center bg-red-500 hover:bg-red-600 text-white text-sm font-semibold py-2 px-4 rounded-lg transition duration-150 shadow-md"
+                        >
+                            <LogOut className="w-4 h-4 mr-2" /> Cerrar Sesión
+                        </button>
+                    )}
+                </header>
+            );
+
+            if (!token) {
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-100">
+                        {alertMessage && <CustomMessageBox message={alertMessage} type={alertType} onClose={() => setAlertMessage(null)} />}
+                        {/* AuthForm ahora guarda el username en localStorage internamente */}
+                        <AuthForm setToken={setToken} showMessage={showAlert} /> 
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen flex flex-col bg-gray-100">
+                    {alertMessage && <CustomMessageBox message={alertMessage} type={alertType} onClose={() => setAlertMessage(null)} />}
+                    <Header />
+
+                    <main className="flex-grow p-4 md:p-8 flex flex-col items-center">
+                        <div className="w-full max-w-6xl">
+                            {/* Barra de Pestañas */}
+                            <div className="flex border-b border-gray-300 mb-6 justify-center">
+                                <TabButton 
+                                    icon={Send} 
+                                    label="Cifrar y Enviar Archivo" 
+                                    isActive={view === 'encrypt'} 
+                                    onClick={() => setView('encrypt')}
+                                />
+                                <TabButton 
+                                    icon={MessageSquare} // <-- Nueva Pestaña
+                                    label="Mensajes Seguros" 
+                                    isActive={view === 'chat'} 
+                                    onClick={() => setView('chat')}
+                                />
+                                <TabButton 
+                                    icon={Inbox} 
+                                    label="Bandeja de Entrada" 
+                                    isActive={view === 'inbox'} 
+                                    onClick={() => setView('inbox')}
+                                />
+                                <TabButton 
+                                    icon={Unlock} 
+                                    label="Descifrado Manual" 
+                                    isActive={view === 'decrypt'} 
+                                    onClick={() => setView('decrypt')}
+                                />
+                            </div>
+                            
+                            {/* Contenido de la Pestaña */}
+                            <div className="flex justify-center">
+                                {view === 'encrypt' && <EncryptView showMessage={showAlert} />}
+                                {view === 'chat' && <ChatView token={token} showMessage={showAlert} />} {/* <-- Render de la Vista de Chat */}
+                                {view === 'inbox' && <InboxView token={token} showMessage={showAlert} />}
+                                {view === 'decrypt' && <DecryptView showMessage={showAlert} />}
+                            </div>
+                        </div>
+                    </main>
+
+                    <footer className="mt-8 text-xs text-gray-500 text-center p-4">
+                        <p>Plataforma Unificada de Transferencia Segura - 2025</p>
+                    </footer>
+                </div>
+            );
+        };
+        
+        // Renderizar la aplicación en el DOM
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<App />);
+
+    </script>
+</body>
+</html>

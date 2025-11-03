@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CryptoShare: Recepción y Descifrado Seguro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <script>
+        // UTILIDAD: Determina el tipo MIME basado en el nombre del archivo (quitando el .enc).
+        const getFileMimeType = (filename) => {
+            const cleanFilename = filename.endsWith('.enc') ? filename.replace('.enc', '') : filename;
+            const extension = cleanFilename.slice(((cleanFilename.lastIndexOf(".") - 1) >>> 0) + 2).toLowerCase();
+            
+            const mimeMap = {
+                'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png', 'gif': 'image/gif',
+                'pdf': 'application/pdf', 'txt': 'text/plain', 
+                'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            };
+            
+            return mimeMap[extension] || 'application/octet-stream'; // Tipo por defecto para datos binarios
+        };
+        
+        // UTILIDAD: Convierte una cadena Base64 a un ArrayBuffer o Blob.
+        const base64ToArrayBuffer = (base64) => {
+            // Decodifica la Base64 a una cadena binaria
+            const binaryString = atob(base64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes.buffer;
+        };
+
+    </script>
+    <style>
+        /* Estilos base con Inter y fondo */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
+        /* Estilo de la pestaña activa: Verde Teal */
+        .tab-active { border-bottom: 3px solid #14b8a6; color: #14b8a6; } /* teal-500 */
+    </style>
+</head>
+<body class="min-h-screen">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useCallback } = React;
+
+        // **IMPORTANTE: Cambiar 'http://localhost:3000' a la URL pública de tu backend Express**
+        const API_BASE_URL = 'http://localhost:3000'; 
+
+        // =======================================================
+        // UTILIDADES
+        // =======================================================
+
+        // Utilidad para descargar el Blob descifrado (este sí elimina la extensión .enc)
+        const downloadDecryptedBlob = (blob, filename) => {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            // Quita la extensión .enc para restaurar el nombre original
+            const cleanFilename = filename.endsWith('.enc') ? filename.replace('.enc', '') : filename;
+            a.download = cleanFilename; 
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        };
+
+        // Utilidad de mensaje (reemplaza alert)
+        const CustomMessageBox = ({ message, type, onClose }) => (
+            <div className={`fixed top-4 left-1/2 transform -translate-x-1/2 p-4 rounded-lg shadow-xl text-white max-w-md w-full z-50 transition-opacity duration-300 ${
+                type === 'success' ? 'bg-green-600' : 'bg-red-600'
+            }`}>
+                <div className="flex justify-between items-center">
+                    <p className="font-medium">{message}</p>
+                    <button onClick={onClose} className="text-white font-bold text-xl ml-4 opacity-75 hover:opacity-100">&times;</button>
+                </div>
+            </div>
+        );
+
+
+        // =======================================================
+        // VISTAS
+        // =======================================================
+
+        // Vista de la Bandeja de Entrada (Archivos Pendientes)
+        const InboxView = ({ token, setToken, showMessage }) => {
+            const [files, setFiles] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [message, setMessage] = useState('Cargando archivos...');
+            
+            const fetchInbox = useCallback(async () => {
+                setLoading(true);
+                setMessage('Cargando archivos...');
+                try {
+                    const response = await fetch(`${API_BASE_URL}/files/inbox`, {
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    const data = await response.json();
+
+                    if (response.ok) {
+                        // Esperamos que cada objeto de archivo tenga: { fileId, originalName, dateSent }
+                        setFiles(data.files || []);
+                        setMessage(data.message || (data.files.length === 0 ? 'No hay archivos.' : 'Archivos cargados.'));
+                    } else {
+                        const errorMessage = data.message || 'Error al cargar la bandeja.';
+                        setMessage(errorMessage);
+                        if (response.status === 401) {
+                            showMessage('Sesión expirada o no válida. Por favor, inicia sesión de nuevo.', 'error');
+                            setToken(null); 
+                        } else {
+                            showMessage(errorMessage, 'error');
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error de red:', error);
+                    setMessage('Error de conexión con el servidor. Verifica la URL de la API.');
+                    showMessage('Error de conexión con el servidor.', 'error');
+                } finally {
+                    setLoading(false);
+                }
+            }, [token, setToken, showMessage]);
+
+            useEffect(() => {
+                fetchInbox();
+            }, [fetchInbox]);
+
+            // MANEJA LA DESCARGA DEL ARCHIVO CIFRADO (.enc) A TRAVÉS DE LA API
+            const handleDownloadEncrypted = async (file) => {
+                try {
+                    // Endpoint modificado para usar el ID del archivo
+                    const downloadUrl = `${API_BASE_URL}/files/download-encrypted/${file.fileId}`;
+                    
+                    const response = await fetch(downloadUrl, {
+                        headers: {
+                            'Authorization': `Bearer ${token}` // Usamos el token para la autorización de descarga
+                        }
+                    }); 
+                    
+                    if (!response.ok) {
+                        showMessage(`Error ${response.status}: El archivo no se pudo descargar. Puede que ya haya sido descargado y eliminado.`, 'error');
+                        // Forzar una actualización de la lista
+                        fetchInbox();
+                        return;
+                    }
+
+                    // Obtener el contenido como Blob binario
+                    const encryptedBlob = await response.blob();
+                    
+                    // FUERZA LA DESCARGA del archivo con la extensión .enc.
+                    // Usamos el nombre original, añadiendo .enc
+                    const cleanFilename = file.originalName + '.enc'; 
+                    const url = URL.createObjectURL(encryptedBlob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = cleanFilename; 
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+
+                    showMessage(`¡Descarga exitosa! Archivo cifrado guardado como: ${cleanFilename}. Ahora ve a "Descifrado Manual" para recuperarlo con tu clave.`, 'success');
+                    
+                    // Actualizar la lista después de una descarga exitosa (el servidor podría haberlo eliminado)
+                    fetchInbox();
+
+                } catch (error) {
+                    showMessage('Error al descargar el archivo cifrado. Intenta de nuevo.', 'error');
+                    console.error('Error en la descarga:', error);
+                }
+            };
+            
+            if (loading) return <p className="text-center p-8 text-gray-500 font-medium">{message}</p>;
+
+            return (
+                <div className="p-4 md:p-8 bg-white rounded-xl shadow-2xl w-full max-w-4xl mx-auto mt-8">
+                    <h2 className="text-2xl font-bold text-gray-800 mb-6 border-b pb-2 flex justify-between items-center">
+                        Bandeja de Entrada Segura
+                        <span className={`text-sm font-medium px-3 py-1 rounded-full ${files.length > 0 ? 'bg-teal-100 text-teal-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                            {files.length} Pendiente{files.length !== 1 ? 's' : ''}
+                        </span>
+                    </h2>
+
+                    {files.length === 0 ? (
+                        <div className="text-center p-10 bg-gray-50 border border-dashed rounded-lg">
+                            <svg className="w-10 h-10 mx-auto text-gray-400 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
+                            <p className="text-gray-500">Tu bandeja de entrada está vacía. 🥳</p>
+                            <button onClick={fetchInbox} className="mt-4 text-sm text-indigo-600 hover:text-indigo-800">Recargar</button>
+                        </div>
+                    ) : (
+                        <ul className="space-y-4">
+                            {/* Usar fileId como key si está disponible */}
+                            {files.map((file) => (
+                                <li key={file.fileId || file.originalName} className="flex flex-col md:flex-row items-start md:items-center justify-between p-4 bg-gray-50 border rounded-lg shadow-sm hover:shadow-lg transition duration-200">
+                                    <div className="flex flex-col mb-2 md:mb-0">
+                                        <p className="font-semibold text-lg text-indigo-700">{file.originalName}</p>
+                                        <p className="text-sm text-gray-500">Enviado el: {new Date(file.dateSent).toLocaleString()}</p>
+                                    </div>
+                                    <button 
+                                        onClick={() => handleDownloadEncrypted(file)}
+                                        className="w-full md:w-auto bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition duration-150 transform hover:scale-[1.02]"
+                                    >
+                                        Descargar Archivo Cifrado (.enc)
+                                    </button>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                </div>
+            );
+        };
+        
+  // Vista de Descifrado Manual (USANDO EL API DE EXPRESS)
+const DecryptView = ({ showMessage }) => {
+    const [file, setFile] = useState(null);
+    const [key, setKey] = useState('');
+    const [message, setMessage] = useState('');
+    const [isDecrypting, setIsDecrypting] = useState(false);
+
+    const handleFileChange = (e) => {
+        setFile(e.target.files[0]);
+        setMessage('');
+    };
+
+    // Función auxiliar para convertir Base64 a ArrayBuffer (necesaria para la descarga)
+    const base64ToArrayBuffer = (base64) => {
+        const binaryString = atob(base64);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes.buffer;
+    };
+    
+    // Función auxiliar para obtener MIME type (necesaria para la descarga)
+    const getFileMimeType = (filename) => {
+        const extension = filename.split('.').pop().toLowerCase();
+        const mimeMap = {
+            'pdf': 'application/pdf',
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'png': 'image/png',
+            'txt': 'text/plain',
+            'doc': 'application/msword',
+            'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'xls': 'application/vnd.ms-excel',
+            'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            // Añade más tipos si es necesario
+        };
+        // Intenta determinar el tipo del archivo original (sin .enc)
+        const originalExtension = filename.replace(/\.enc$/, '').split('.').pop().toLowerCase();
+        return mimeMap[originalExtension] || 'application/octet-stream';
+    };
+
+    // Función auxiliar para forzar la descarga del Blob
+    const downloadDecryptedBlob = (blob, encryptedFileName) => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        // Quitar la extensión .enc para obtener el nombre original
+        const originalName = encryptedFileName.replace(/\.enc$/, ''); 
+        a.download = originalName;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+    };
+
+
+    const handleManualDecrypt = () => {
+        if (!file || !key) {
+            setMessage('Debes seleccionar el archivo cifrado (.enc) y la clave.');
+            return;
+        }
+        
+        const token = localStorage.getItem('authToken'); 
+        
+        if (!token) {
+            const authErrorMsg = 'Error 401: No se pudo encontrar el token de sesión. Vuelve a iniciar sesión.';
+            showMessage(authErrorMsg, 'error');
+            setMessage(authErrorMsg);
+            return;
+        }
+
+        setIsDecrypting(true);
+        setMessage('Enviando archivo y clave al servidor para descifrado...');
+
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            try {
+                // 1. Convertir el ArrayBuffer a Base64
+                const base64Encrypted = btoa(new Uint8Array(e.target.result).reduce((data, byte) => data + String.fromCharCode(byte), ''));
+
+                // 2. Enviar datos cifrados y clave al backend
+                const response = await fetch(`${API_BASE_URL}/files/decrypt`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}` 
+                    },
+                    body: JSON.stringify({
+                        // ✅ CORREGIDO: Usar 'encryptedFileData' en lugar de 'encryptedFileBase64'
+                        encryptedFileData: base64Encrypted, 
+                        decryptionKey: key,
+                        // ✅ CORREGIDO: Usar 'originalName' en lugar de 'originalFilename'
+                        originalName: file.name 
+                    })
+                });
+
+                const responseData = await response.json();
+                
+                if (response.ok) {
+                    // 3. El servidor respondió con éxito. Ahora espera 'fileData' y 'fileName'
+                    if (!responseData.fileData) {
+                        throw new Error('El servidor no devolvió el archivo descifrado (missing fileData).');
+                    }
+
+                    // 4. Convertir Base64 de vuelta a Blob binario
+                    // responseData.fileData contiene el Base64 del archivo descifrado
+                    const decryptedBuffer = base64ToArrayBuffer(responseData.fileData); 
+                    const mimeType = getFileMimeType(file.name); 
+                    const decryptedBlob = new Blob([decryptedBuffer], { type: mimeType });
+
+                    // 5. Descargar el archivo descifrado
+                    downloadDecryptedBlob(decryptedBlob, file.name);
+
+                    showMessage(`¡Archivo descifrado y guardado con éxito! Nombre: ${file.name.replace('.enc', '')}.`, 'success');
+                    setMessage('Descifrado completo.');
+                    
+                    // Limpiar formularios
+                    setFile(null);
+                    setKey('');
+                    document.getElementById('file-upload').value = null; 
+
+                } else {
+                    // 6. El servidor falló (ej: clave incorrecta, error 400/500)
+                    const errorMessage = responseData.message || `Error ${response.status}: Error de descifrado. Verifica la clave o el archivo.`;
+                    setMessage(errorMessage);
+                    showMessage(errorMessage, 'error');
+                    console.error('Error de API al descifrar:', responseData);
+                }
+            } catch (fetchError) {
+                setMessage('Error de conexión o procesamiento. Revisa la consola.');
+                showMessage('Error grave de red o conversión de datos.', 'error');
+                console.error('Error de proceso de descifrado:', fetchError);
+            } finally {
+                setIsDecrypting(false);
+            }
+        };
+        
+        reader.onerror = () => {
+            setIsDecrypting(false);
+            setMessage('Error al leer el archivo.');
+            showMessage('Error al leer el archivo.', 'error');
+        }
+        
+        reader.readAsArrayBuffer(file);
+    };
+
+    // ... (El resto del return JSX es idéntico)
+    return (
+        <div className="p-8 bg-white rounded-xl shadow-2xl w-full max-w-md mx-auto mt-8">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4 flex items-center">
+                <svg className="w-6 h-6 mr-2 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                Descifrado Manual
+            </h2>
+            <p className="text-gray-600 mb-6 border-b pb-4">Sube el archivo **.enc** descargado y usa la **clave** que recibiste por separado para recuperar tu archivo original.</p>
+            
+            <div className="mb-4">
+                <label className="block text-gray-700 font-medium mb-2">1. Seleccionar Archivo Cifrado (.enc)</label>
+                <input
+                    id="file-upload" // ID para limpiar el input
+                    type="file"
+                    onChange={handleFileChange}
+                    accept=".enc"
+                    className="w-full p-2 border border-gray-300 rounded-lg file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                />
+                  {file && <p className="mt-2 text-sm text-gray-500">Archivo seleccionado: **{file.name}**</p>}
+            </div>
+
+            <div className="mb-6">
+                <label className="block text-gray-700 font-medium mb-2">2. Introducir Clave de Descifrado</label>
+                <input
+                    type="text"
+                    placeholder="Clave secreta recibida por correo/SMS"
+                    value={key}
+                    onChange={(e) => setKey(e.target.value)}
+                    className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+            </div>
+            
+            {message && (
+                <p className={`p-3 rounded-lg mb-4 text-sm font-medium ${message.includes('éxito') || message.includes('completo') ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                    {message}
+                </p>
+            )}
+
+            <button 
+                onClick={handleManualDecrypt}
+                disabled={!file || !key || isDecrypting}
+                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-lg shadow-xl transition duration-150 disabled:bg-gray-400 disabled:shadow-none transform hover:scale-[1.005]"
+            >
+                {isDecrypting ? 'Descifrando y Descargando...' : '3. Descifrar y Guardar Archivo'}
+            </button>
+            
+        </div>
+    );
+};
+
+
+        
+        // ... Componente AuthForm (sin cambios funcionales, solo estilo menor)
+
+        const AuthForm = ({ setToken, showMessage }) => {
+            const [username, setUsername] = useState('');
+            const [password, setPassword] = useState('');
+            const [isRegister, setIsRegister] = useState(false);
+            const [email, setEmail] = useState('');
+            const [error, setError] = useState('');
+            const [loading, setLoading] = useState(false);
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                setError('');
+                setLoading(true);
+
+                const endpoint = isRegister ? '/auth/register' : '/auth/login';
+                const payload = { username, password };
+                if (isRegister) payload.email = email;
+
+                try {
+                    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok && data.token) {
+                        localStorage.setItem('authToken', data.token);
+                        setToken(data.token);
+                        showMessage('Autenticación exitosa.', 'success');
+                    } else {
+                        setError(data.message || `Error ${response.status}: Verifica tus credenciales.`);
+                    }
+                } catch (err) {
+                    setError('Error de conexión con el servidor. Asegúrate de que el backend esté corriendo.');
+                    console.error(err);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-sm mt-8">
+                    <h2 className="text-3xl font-extrabold text-gray-900 mb-6 text-center">{isRegister ? 'Crear Cuenta (Receptor)' : 'Iniciar Sesión (Receptor)'}</h2>
+                    
+                    <form onSubmit={handleSubmit}>
+                        <input
+                            type="text"
+                            placeholder="Nombre de Usuario"
+                            value={username}
+                            onChange={(e) => setUsername(e.target.value)}
+                            className="w-full p-3 border border-gray-300 rounded-lg mb-4 focus:ring-indigo-500 focus:border-indigo-500"
+                            required
+                        />
+                        {isRegister && (
+                            <input
+                                type="email"
+                                placeholder="Correo Electrónico (Para recibir claves)"
+                                value={email}
+                                onChange={(e) => setEmail(e.target.value)}
+                                className="w-full p-3 border border-gray-300 rounded-lg mb-4 focus:ring-indigo-500 focus:border-indigo-500"
+                                required
+                            />
+                        )}
+                        <input
+                            type="password"
+                            placeholder="Contraseña"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            className="w-full p-3 border border-gray-300 rounded-lg mb-6 focus:ring-indigo-500 focus:border-indigo-500"
+                            required
+                        />
+
+                        {error && <p className="text-red-600 mb-4 text-sm bg-red-100 p-2 rounded-lg">{error}</p>}
+
+                        <button
+                            type="submit"
+                            disabled={loading}
+                            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-lg transition duration-150 shadow-md disabled:opacity-50"
+                        >
+                            {loading ? 'Cargando...' : (isRegister ? 'Registrarse' : 'Iniciar Sesión')}
+                        </button>
+                    </form>
+                    
+                    <p className="mt-4 text-center text-sm text-gray-600">
+                        {isRegister ? '¿Ya tienes una cuenta?' : '¿No tienes una cuenta?'}
+                        <button 
+                            type="button" 
+                            onClick={() => setIsRegister(!isRegister)}
+                            className="text-indigo-600 hover:text-indigo-800 font-semibold ml-1"
+                        >
+                            {isRegister ? 'Iniciar Sesión' : 'Registrarse'}
+                        </button>
+                    </p>
+                </div>
+            );
+        };
+
+
+        const App = () => {
+            // Inicializa el token desde localStorage
+            const [token, setToken] = useState(localStorage.getItem('authToken'));
+            const [view, setView] = useState('inbox'); // 'inbox' o 'decrypt'
+            const [alertMessage, setAlertMessage] = useState(null);
+            const [alertType, setAlertType] = useState('success');
+
+            const handleLogout = () => {
+                localStorage.removeItem('authToken');
+                setToken(null);
+                setView('inbox');
+                showAlert('Sesión cerrada con éxito.', 'success');
+            };
+
+            // Función para mostrar mensajes personalizados
+            const showAlert = (message, type = 'success') => {
+                setAlertMessage(message);
+                setAlertType(type);
+                // Ocultar después de 5 segundos
+                setTimeout(() => setAlertMessage(null), 5000); 
+            };
+
+            const header = (
+                <header className="bg-white shadow-lg sticky top-0 z-10">
+                    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col md:flex-row justify-between items-center">
+                        <h1 className="text-3xl font-extrabold text-gray-900 mb-2 md:mb-0">CryptoShare: Recepción</h1>
+                        {token && (
+                            <div className="flex flex-col md:flex-row items-center space-y-2 md:space-y-0 md:space-x-4 w-full md:w-auto">
+                                <nav className="flex space-x-4 w-full justify-center md:w-auto">
+                                    <button 
+                                        onClick={() => setView('inbox')}
+                                        className={`font-semibold pb-1 transition duration-150 ${view === 'inbox' ? 'tab-active' : 'text-gray-500 hover:text-teal-700'}`}
+                                    >
+                                        Bandeja de Entrada
+                                    </button>
+                                    <button 
+                                        onClick={() => setView('decrypt')}
+                                        className={`font-semibold pb-1 transition duration-150 ${view === 'decrypt' ? 'tab-active' : 'text-gray-500 hover:text-teal-700'}`}
+                                    >
+                                        Descifrado Manual
+                                    </button>
+                                </nav>
+                                <button 
+                                    onClick={handleLogout}
+                                    className="w-full md:w-auto bg-red-500 hover:bg-red-600 text-white text-sm font-semibold py-1 px-3 rounded-lg transition duration-150"
+                                >
+                                    Cerrar Sesión
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </header>
+            );
+
+            return (
+                <div className="min-h-screen flex flex-col">
+                    {alertMessage && <CustomMessageBox message={alertMessage} type={alertType} onClose={() => setAlertMessage(null)} />}
+                    {header}
+                    <main className="flex-grow p-4 flex items-start justify-center">
+                        {!token ? (
+                            <AuthForm setToken={setToken} showMessage={showAlert} />
+                        ) : (
+                            <div className="w-full max-w-6xl">
+                                {view === 'inbox' && <InboxView token={token} setToken={setToken} showMessage={showAlert} />}
+                                {view === 'decrypt' && <DecryptView showMessage={showAlert} />}
+                            </div>
+                        )}
+                    </main>
+                </div>
+            );
+        };
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
